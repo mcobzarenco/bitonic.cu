@@ -17,10 +17,14 @@ fn main() {
     let code = "sm_86"; // For the same SM 8.6 (Ampere architecture).
 
     // build the cuda kernels
-    let cuda_src = PathBuf::from("src/cuda/bitonic.cu");
+    let cuda_src = PathBuf::from("src/cuda/bitonic_full.cu");
     let ptx_file = out_dir.join("bitonic.ptx");
 
     let nvcc_status = Command::new("nvcc")
+        .arg("-O3")
+        .arg("-Xptxas")
+        // .arg("-fast_math")
+        .arg("--use_fast_math")
         .arg("-ptx")
         .arg("-o")
         .arg(&ptx_file)
@@ -46,9 +50,11 @@ fn main() {
         // included header files changed.
         .parse_callbacks(Box::new(CargoCallbacks))
         // we use "no_copy" and "no_debug" here because we don't know if we can safely generate them for our structs in C code (they may contain raw pointers)
-        .no_copy("*")
-        .no_debug("*")
+        // .no_copy("*")
+        // .no_debug("*")
         // Finish the builder and generate the bindings.
+        .derive_copy(true)
+        .derive_partialeq(true)
         .generate()
         // Unwrap the Result and panic on failure.
         .expect("Unable to generate bindings");
