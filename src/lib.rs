@@ -26,12 +26,12 @@ const BLOCK_SIZE: u32 = 1024;
 impl GpuSorter {
     pub fn new(device_ordinal: usize) -> Result<Self, DriverError> {
         // Initialise CUDA
-        let now = Instant::now();
+        // let now = Instant::now();
         let device = CudaDevice::new(device_ordinal)?;
         // println!("Time taken to initialise CUDA: {:.2?}", now.elapsed());
 
         // Compile and load kernels
-        let now = Instant::now();
+        // let now = Instant::now();
         let ptx = Ptx::from_src(BITONIC_CUDA_KERNEL);
         device.load_ptx(
             ptx,
@@ -81,7 +81,7 @@ impl GpuSorter {
                 LaunchConfig {
                     grid_dim: (block_count, 1, 1),
                     block_dim: (BLOCK_SIZE, 1, 1),
-                    shared_mem_bytes: BLOCK_SIZE * 4,
+                    shared_mem_bytes: 2 * BLOCK_SIZE * std::mem::size_of::<Struct>() as u32,
                 },
                 (structs, height),
             )
@@ -99,7 +99,7 @@ impl GpuSorter {
                 LaunchConfig {
                     grid_dim: (block_count, 1, 1),
                     block_dim: (BLOCK_SIZE, 1, 1),
-                    shared_mem_bytes: BLOCK_SIZE * 4,
+                    shared_mem_bytes: 2 * BLOCK_SIZE * std::mem::size_of::<Struct>() as u32,
                 },
                 (structs, height),
             )
@@ -117,7 +117,7 @@ impl GpuSorter {
                 LaunchConfig {
                     grid_dim: (block_count, 1, 1),
                     block_dim: (BLOCK_SIZE, 1, 1),
-                    shared_mem_bytes: BLOCK_SIZE * 4,
+                    shared_mem_bytes: 2 * BLOCK_SIZE * std::mem::size_of::<Struct>() as u32,
                 },
                 (structs, height),
             )
@@ -135,7 +135,7 @@ impl GpuSorter {
                 LaunchConfig {
                     grid_dim: (block_count, 1, 1),
                     block_dim: (BLOCK_SIZE, 1, 1),
-                    shared_mem_bytes: BLOCK_SIZE * 4,
+                    shared_mem_bytes: 2 * BLOCK_SIZE * std::mem::size_of::<Struct>() as u32,
                 },
                 (structs, height),
             )
@@ -148,7 +148,7 @@ impl GpuSorter {
         let block_count = num_elements / (2 * BLOCK_SIZE);
         // println!("Block count = {}", block_count);
 
-        let now = Instant::now();
+        // let now = Instant::now();
         let structs_gpu = self.device.htod_copy(structs)?;
 
         // println!(
@@ -156,7 +156,7 @@ impl GpuSorter {
         //     now.elapsed()
         // );
 
-        let now = Instant::now();
+        // let now = Instant::now();
         let mut height = BLOCK_SIZE * 2;
 
         self.local_binary_merge_sort(block_count, &structs_gpu, height)?;
@@ -203,7 +203,7 @@ fn generate_some_data(num_elements: usize) -> Vec<Struct> {
 }
 
 pub fn main_full() -> Result<(), DriverError> {
-    let num_elements: u32 = 1 << 28;
+    let num_elements: u32 = 1 << 30;
 
     let now = Instant::now();
     let structs = generate_some_data(num_elements as usize);
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn sorts_correctly() {
-        for num_elements in (8..18).map(|pow| 1 << pow) {
+        for num_elements in (11..18).map(|pow| 1 << pow) {
             dbg!(num_elements);
             for _num_retry in 0..10 {
                 // Generate some date
