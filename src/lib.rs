@@ -1,13 +1,15 @@
 #![feature(allocator_api)]
 
 mod bindings;
+mod page_locked;
 
 use cudarc::{
     driver::{CudaDevice, CudaFunction, CudaSlice, DriverError, LaunchAsync, LaunchConfig},
     nvrtc::Ptx,
 };
+use page_locked::CudaHostAllocator;
 use rand::Rng;
-use std::{cmp::Ordering, sync::Arc, time::Instant, mem::align_of};
+use std::{cmp::Ordering, sync::Arc, time::Instant};
 
 pub use crate::bindings::Struct;
 
@@ -209,22 +211,8 @@ pub fn generate_some_data(num_elements: usize) -> Vec<Struct> {
     structs
 }
 
-fn generate_some_data_phm(num_elements: usize) -> Vec<Struct> {
-    let mut structs: Vec<Struct> = unsafe {
-        let mut allocation = std::ptr::null_mut::<std::ffi::c_void>();
-        let cu_result = cudarc::driver::sys::cuMemHostAlloc(
-            &mut allocation as * mut * mut std::ffi::c_void,
-            num_elements * std::mem::size_of::<Struct>(),
-            cudarc::driver::sys::CU_MEMHOSTALLOC_DEVICEMAP
-                // cudarc::driver::sys::CU_MEMHOSTALLOC_WRITECOMBINED
-        );
-        if cu_result != cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
-            panic!("could not allocate page locked host mem: {:?}", cu_result);
-        }
-        assert_eq!(allocation.align_offset(align_of::<Struct>()), 0);
-
-        Vec::from_raw_parts(allocation as *mut Struct, 0, num_elements)        
-    };
+pub fn generate_some_data_page_locked(num_elements: usize) -> Vec<Struct, CudaHostAllocator> {
+    let mut structs = Vec::with_capacity_in(num_elements, CudaHostAllocator);
 
     let mut rng = rand::thread_rng();
     for _ in 0..num_elements {
@@ -243,7 +231,7 @@ pub fn main_full() -> Result<(), DriverError> {
     println!("GpuSorter::new time: {:.2?}", now.elapsed());
 
     let now = Instant::now();
-    let mut structs = generate_some_data_phm(num_elements as usize);
+    let mut structs = generate_some_data_page_locked(num_elements as usize);
     println!("Generate data {num_elements} time: {:.2?}", now.elapsed());
 
     {
@@ -293,8 +281,6 @@ pub fn main_full() -> Result<(), DriverError> {
             current.value
         );
     }
-
-    std::mem::forget(structs); 
 
     Ok(())
 }

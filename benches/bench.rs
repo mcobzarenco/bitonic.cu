@@ -1,15 +1,20 @@
+#![feature(allocator_api)]
 #![feature(test)]
 extern crate test;
 
-use std::cmp::Ordering;
+use std::{alloc::Allocator, cmp::Ordering};
 
-use bitonic_cuda::{generate_some_data, GpuSorter, Struct};
+use bitonic_cuda::{generate_some_data, generate_some_data_page_locked, GpuSorter, Struct};
 use rayon::slice::ParallelSliceMut;
 use test::{black_box, Bencher};
 
-fn bench_sorter(bencher: &mut Bencher, size: usize, sorter: impl Fn(&mut [Struct])) {
-    let elements = generate_some_data(size);
-    let mut sortable_elements = Vec::with_capacity(size);
+fn bench_sorter_with_data<A: Allocator>(
+    bencher: &mut Bencher,
+    elements: Vec<Struct, A>,
+    sorter: impl Fn(&mut [Struct]),
+) {
+    // let mut sortable_elements = Vec::with_capacity_in(elements.len(), elements.allocator());
+    let mut sortable_elements = Vec::with_capacity(elements.len());
     bencher.iter(|| {
         sortable_elements.clear();
         for element in &elements {
@@ -17,6 +22,11 @@ fn bench_sorter(bencher: &mut Bencher, size: usize, sorter: impl Fn(&mut [Struct
         }
         black_box(sorter(sortable_elements.as_mut_slice()));
     });
+}
+
+fn bench_sorter(bencher: &mut Bencher, size: usize, sorter: impl Fn(&mut [Struct])) {
+    let elements = generate_some_data(size);
+    bench_sorter_with_data(bencher, elements, sorter);
 }
 
 #[inline]
@@ -125,9 +135,29 @@ fn rayon_unstable_1048576(bencher: &mut Bencher) {
 }
 
 #[bench]
+fn rayon_unstable_1048576_pl(bencher: &mut Bencher) {
+    let sorter = GpuSorter::new(0).unwrap();
+    bench_sorter_with_data(
+        bencher,
+        generate_some_data_page_locked(1048576),
+        rayon_unstable,
+    );
+}
+
+#[bench]
 fn bitonic_1048576(bencher: &mut Bencher) {
     let sorter = GpuSorter::new(0).unwrap();
-    bench_sorter(bencher, 1048576, |slice| sorter.sort_structs(slice).unwrap());
+    bench_sorter(bencher, 1048576, |slice| {
+        sorter.sort_structs(slice).unwrap()
+    });
+}
+
+#[bench]
+fn bitonic_1048576_pl(bencher: &mut Bencher) {
+    let sorter = GpuSorter::new(0).unwrap();
+    bench_sorter_with_data(bencher, generate_some_data_page_locked(1048576), |slice| {
+        sorter.sort_structs(slice).unwrap()
+    });
 }
 
 // 33,554,432
@@ -155,7 +185,9 @@ fn rayon_unstable_33554432(bencher: &mut Bencher) {
 #[bench]
 fn bitonic_33554432(bencher: &mut Bencher) {
     let sorter = GpuSorter::new(0).unwrap();
-    bench_sorter(bencher, 33554432, |slice| sorter.sort_structs(slice).unwrap());
+    bench_sorter(bencher, 33554432, |slice| {
+        sorter.sort_structs(slice).unwrap()
+    });
 }
 
 // 1,073,741,824
@@ -163,7 +195,9 @@ fn bitonic_33554432(bencher: &mut Bencher) {
 #[bench]
 fn bitonic_1073741824(bencher: &mut Bencher) {
     let sorter = GpuSorter::new(0).unwrap();
-    bench_sorter(bencher, 1073741824, |slice| sorter.sort_structs(slice).unwrap());
+    bench_sorter(bencher, 1073741824, |slice| {
+        sorter.sort_structs(slice).unwrap()
+    });
 }
 
 #[bench]
