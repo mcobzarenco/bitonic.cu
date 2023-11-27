@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include "struct.h"
 
 extern __shared__ Struct block_structs[];

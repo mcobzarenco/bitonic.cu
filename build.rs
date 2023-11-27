@@ -1,8 +1,4 @@
-// extern crate bindgen;
-// extern crate cc;
-
 use std::{env, path::PathBuf, process::Command};
-
 use bindgen::CargoCallbacks;
 use regex::Regex;
 
@@ -23,9 +19,9 @@ fn main() {
     let nvcc_status = Command::new("nvcc")
         .arg("-O3")
         .arg("-Xptxas")
-        // .arg("-fast_math")
         .arg("--use_fast_math")
         .arg("-ptx")
+        .arg("-dopt=on")
         .arg("-o")
         .arg(&ptx_file)
         .arg(&cuda_src)

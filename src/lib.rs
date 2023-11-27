@@ -1,3 +1,5 @@
+#![feature(allocator_api)]
+
 mod bindings;
 
 use cudarc::{
@@ -5,9 +7,9 @@ use cudarc::{
     nvrtc::Ptx,
 };
 use rand::Rng;
-use std::{cmp::Ordering, sync::Arc, time::Instant};
+use std::{cmp::Ordering, sync::Arc, time::Instant, mem::align_of};
 
-use crate::bindings::Struct;
+pub use crate::bindings::Struct;
 
 // Include the compiled PTX code as string
 const BITONIC_CUDA_KERNEL: &str = include_str!(concat!(env!("OUT_DIR"), "/bitonic.ptx"));
@@ -142,21 +144,20 @@ impl GpuSorter {
         }
     }
 
-    fn sort_structs(&self, structs: Vec<Struct>) -> Result<Vec<Struct>, DriverError> {
+    pub fn sort_structs(&self, structs: &mut [Struct]) -> Result<(), DriverError> {
         let num_elements = u32::try_from(structs.len()).unwrap();
 
         let block_count = num_elements / (2 * BLOCK_SIZE);
         // println!("Block count = {}", block_count);
 
-        // let now = Instant::now();
-        let structs_gpu = self.device.htod_copy(structs)?;
+        let now = Instant::now();
+        let structs_gpu = self.device.htod_sync_copy(structs)?;
+        println!(
+            "copy data host -> device: {:.2?}",
+            now.elapsed()
+        );
 
-        // println!(
-        //     "Time taken to copy data host -> device: {:.2?}",
-        //     now.elapsed()
-        // );
-
-        // let now = Instant::now();
+        let now = Instant::now();
         let mut height = BLOCK_SIZE * 2;
 
         self.local_binary_merge_sort(block_count, &structs_gpu, height)?;
@@ -180,18 +181,24 @@ impl GpuSorter {
             }
             height *= 2;
         }
-        let my_structs = self.device.sync_reclaim(structs_gpu)?;
+        self.device.synchronize()?;
+        println!(
+            "gpu sort data: {:.2?}",
+            now.elapsed()
+        );
 
-        // println!(
-        //     "Time taken to sort and copy data device -> host: {:.2?}",
-        //     now.elapsed()
-        // );
+        let now = Instant::now();
+        self.device.dtoh_sync_copy_into(&structs_gpu, structs)?;
+        println!(
+            "copy data device -> host: {:.2?}",
+            now.elapsed()
+        );
 
-        Ok(my_structs)
+        Ok(())
     }
 }
 
-fn generate_some_data(num_elements: usize) -> Vec<Struct> {
+pub fn generate_some_data(num_elements: usize) -> Vec<Struct> {
     let mut structs = Vec::with_capacity(num_elements);
     let mut rng = rand::thread_rng();
     for _ in 0..num_elements {
@@ -199,19 +206,52 @@ fn generate_some_data(num_elements: usize) -> Vec<Struct> {
             value: rng.gen::<f32>() * 200.0 - 100.0,
         });
     }
-    return structs;
+    structs
+}
+
+fn generate_some_data_phm(num_elements: usize) -> Vec<Struct> {
+    let mut structs: Vec<Struct> = unsafe {
+        let mut allocation = std::ptr::null_mut::<std::ffi::c_void>();
+        let cu_result = cudarc::driver::sys::cuMemHostAlloc(
+            &mut allocation as * mut * mut std::ffi::c_void,
+            num_elements * std::mem::size_of::<Struct>(),
+            cudarc::driver::sys::CU_MEMHOSTALLOC_DEVICEMAP
+                // cudarc::driver::sys::CU_MEMHOSTALLOC_WRITECOMBINED
+        );
+        if cu_result != cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
+            panic!("could not allocate page locked host mem: {:?}", cu_result);
+        }
+        assert_eq!(allocation.align_offset(align_of::<Struct>()), 0);
+
+        Vec::from_raw_parts(allocation as *mut Struct, 0, num_elements)        
+    };
+
+    let mut rng = rand::thread_rng();
+    for _ in 0..num_elements {
+        structs.push(Struct {
+            value: rng.gen::<f32>() * 200.0 - 100.0,
+        });
+    }
+    structs
 }
 
 pub fn main_full() -> Result<(), DriverError> {
-    let num_elements: u32 = 1 << 30;
+    let num_elements: u32 = 1 << 25;
 
     let now = Instant::now();
-    let structs = generate_some_data(num_elements as usize);
+    let sorter = GpuSorter::new(0)?;
+    println!("GpuSorter::new time: {:.2?}", now.elapsed());
+
+    let now = Instant::now();
+    let mut structs = generate_some_data_phm(num_elements as usize);
     println!("Generate data {num_elements} time: {:.2?}", now.elapsed());
 
     {
         use rayon::prelude::*;
+        let now = Instant::now();
         let mut structs = structs.clone();
+        println!("structs clone: {:.2?}", now.elapsed());
+
         let now = Instant::now();
         structs.par_sort_unstable_by(|a, b| {
             if a.value < b.value {
@@ -227,12 +267,8 @@ pub fn main_full() -> Result<(), DriverError> {
     }
 
     let now = Instant::now();
-    let sorter = GpuSorter::new(0)?;
-    println!("GpuSorter::new time: {:.2?}", now.elapsed());
-
-    let now = Instant::now();
-    let my_structs = sorter.sort_structs(structs)?;
-    println!("Sort time: {:.2?}", now.elapsed());
+    sorter.sort_structs(structs.as_mut_slice())?;
+    println!("total gpu sort time: {:.2?}", now.elapsed());
 
     // println!(
     //     "{:?}",
@@ -244,9 +280,9 @@ pub fn main_full() -> Result<(), DriverError> {
     // );
 
     // let my_structs = structs;
-    for (index, (previous, current)) in (&my_structs[..my_structs.len() - 1])
+    for (index, (previous, current)) in (&structs[..structs.len() - 1])
         .iter()
-        .zip((&my_structs[1..]).iter())
+        .zip((&structs[1..]).iter())
         .enumerate()
     {
         assert!(
@@ -257,6 +293,8 @@ pub fn main_full() -> Result<(), DriverError> {
             current.value
         );
     }
+
+    std::mem::forget(structs); 
 
     Ok(())
 }
@@ -273,7 +311,7 @@ mod tests {
             dbg!(num_elements);
             for _num_retry in 0..10 {
                 // Generate some date
-                let structs = generate_some_data(num_elements);
+                let mut structs = generate_some_data(num_elements);
 
                 // Make a copy and sort it with rayon
                 let mut rayon_sorted = structs.clone();
@@ -286,7 +324,11 @@ mod tests {
                 });
 
                 // Sort it with the CUDA sorter
-                let gpu_sorted = GpuSorter::new(0).unwrap().sort_structs(structs).unwrap();
+                GpuSorter::new(0)
+                    .unwrap()
+                    .sort_structs(structs.as_mut_slice())
+                    .unwrap();
+                let gpu_sorted = structs;
 
                 // Check it's the same
                 assert!(
